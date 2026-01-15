@@ -1,0 +1,25 @@
+# Core dependencies for textattack-demo project
+# Install with: pip install -r requirements.txt
+
+# TextAttack - for adversarial text attack demo (main.py)
+textattack>=0.3.8
+
+# Transformers - for Hugging Face models (both scripts)
+transformers>=4.30.0
+
+# PyTorch - for model inference (both scripts)
+# Note: Install appropriate version for your system (CPU or CUDA)
+# For CPU: pip install torch
+# For CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+
+# Accelerate - for efficient model loading (qwen_demo.py with device_map="auto")
+accelerate>=0.20.0
+
+# Progress bar (used in main.py, may be included with textattack)
+tqdm>=4.65.0
+
+# Additional dependencies that may be required
+numpy>=1.24.0
+datasets>=2.12.0
+
