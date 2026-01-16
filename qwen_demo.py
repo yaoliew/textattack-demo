@@ -17,7 +17,7 @@ def demo_qwen2_5_7b_instruct():
     print("Qwen2.5-7B-Instruct Demo")
     print("=" * 80)
     
-    # Check device availability
+    # Check de!ce availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
     
