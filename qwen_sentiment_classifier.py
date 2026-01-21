@@ -43,7 +43,7 @@ class QwenSentimentClassifier(ModelWrapper):
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                device_map="auto" if self.device.type == "cuda" else None,
+                device_map="cuda:0" if self.device.type == "cuda" else None,
             )
             
             if self.device.type == "cpu":
