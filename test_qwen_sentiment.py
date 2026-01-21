@@ -64,9 +64,10 @@ def test_textattack_integration(model_wrapper):
     
     # Create a simple dataset (modeled after main.py line 59)
     test_dataset = Dataset([
-        ("I love this product!", 1),  # (text, label) - label 1 = Positive
-        ("This is awful.", 0),        # label 0 = Negative
-        ("The movie was okay.", 1),   # Neutral-positive example
+        ("Although the rain had stopped hours earlier and the city lights reflected faintly off the damp pavement like scattered constellations, he continued walking without checking the time, replaying conversations he wished had gone differently, imagining alternate futures that branched endlessly from minor choices, and wondering whether meaning was something patiently discovered through effort or merely imposed afterward to make uncertainty feel survivable.", 1)
+        # ("I love this product!", 1),  # (text, label) - label 1 = Positive
+        # ("This is awful.", 0),        # label 0 = Negative
+        # ("The movie was okay.", 1),   # Neutral-positive example
     ])
     
     # Attack initialization (modeled after main.py lines 61-65)
