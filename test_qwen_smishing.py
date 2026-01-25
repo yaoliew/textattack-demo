@@ -1,5 +1,5 @@
 """
-Demo script showing how to use QwenSentimentClassifier with TextAttack.
+Demo script showing how to use QwenSmishingClassifier with TextAttack.
 """
 
 import os
@@ -8,8 +8,9 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['GOTO_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 
+import ast 
 import torch
-from qwen_sentiment_classifier import QwenSentimentClassifier
+from qwen_smishing_classifier import QwenSmishingClassifier
 from textattack.goal_functions import UntargetedClassification, TargetedClassification
 from textattack.datasets import Dataset
 from textattack import Attack, Attacker, AttackArgs
@@ -20,6 +21,17 @@ from textattack.constraints.pre_transformation import (
     StopwordModification,
 )
 
+def load_tuple_dataset(path):
+    examples = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            text, label = ast.literal_eval(line)  # parses "('text', 0)"
+            examples.append((text, int(label)))
+    return Dataset(examples[:3])
+
 
 class SimpleWordSwap(WordSwap):
     """Simple word swap transformation for testing."""
@@ -29,14 +41,14 @@ class SimpleWordSwap(WordSwap):
 
 
 def test_basic_classification(classifier):
-    """Test basic sentiment classification."""
+    """Test basic smishing classification."""
     print("=" * 80)
     print("Basic Classification Test")
     print("=" * 80)
     
     test_texts = [
-        "I love this movie! It's fantastic!",
-        "This is terrible. I hate it.",
+        "Your package arrives at the Cyprus Post Office tomorrow.Confirm delivery: https://51.fi/aJzP",
+        "Shipped: Your Amazon package with Old Spice High Endurance Deodorant will be delivered Tue, May 24. Track at http://a.co/4SJitSA",
     ]
     
     # Test __call__ method (TextAttack interface)
@@ -62,21 +74,16 @@ def test_textattack_integration(model_wrapper):
     # Create goal function (modeled after main.py line 58)
     goal_function = UntargetedClassification(model_wrapper)
     
-    # Create a simple dataset (modeled after main.py line 59)
-    test_dataset = Dataset([
-        ("Although the rain had stopped hours earlier and the city lights reflected faintly off the damp pavement like scattered constellations, he continued walking without checking the time, replaying conversations he wished had gone differently, imagining alternate futures that branched endlessly from minor choices, and wondering whether meaning was something patiently discovered through effort or merely imposed afterward to make uncertainty feel survivable.", 1)
-        # ("I love this product!", 1),  # (text, label) - label 1 = Positive
-        # ("This is awful.", 0),        # label 0 = Negative
-        # ("The movie was okay.", 1),   # Neutral-positive example
-    ])
-    
-    # Attack initialization (modeled after main.py lines 61-65)
+    # load dataset (0 = Legitimate, 1 = Smishing/Spam)
+    test_dataset = load_tuple_dataset("smishing_data/dataset_cleaned_tuples.txt")
+    # test_
+    # Attack initialization 
     transformation = SimpleWordSwap()
     constraints = [RepeatModification(), StopwordModification()]
     search_method = GreedySearch()
     attack = Attack(goal_function, constraints, transformation, search_method)
     
-    # Apply attack on the model (modeled after main.py lines 67-70)
+    # Apply attack on the model
     print("\nClearing CUDA cache before attack...")
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -91,7 +98,7 @@ def test_textattack_integration(model_wrapper):
     attacker = Attacker(attack, test_dataset, attack_args)
     attack_results = attacker.attack_dataset()
     
-    # Print results (modeled after main.py lines 72-78)
+    # Print results
     print("\n" + "="*80)
     print("Attack Results")
     print("="*80)
@@ -131,9 +138,9 @@ def test_simple_attack(model_wrapper):
 if __name__ == "__main__":
     # Load model once and reuse across all tests
     print("=" * 80)
-    print("Loading Qwen Sentiment Classifier (shared across all tests)")
+    print("Loading Qwen Smishing Classifier (shared across all tests)")
     print("=" * 80)
-    model_wrapper = QwenSentimentClassifier()
+    model_wrapper = QwenSmishingClassifier()
     print("\nModel loaded! Reusing this instance for all tests.\n")
     
     # Run basic classification test

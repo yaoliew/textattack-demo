@@ -10,17 +10,17 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from textattack.models.wrappers import ModelWrapper
 
 
-class QwenSentimentClassifier(ModelWrapper):
+class QwenSmishingClassifier(ModelWrapper):
     """
-    TextAttack-compatible wrapper for Qwen2.5-7B-Instruct sentiment classification.
+    TextAttack-compatible wrapper for Qwen2.5-7B-Instruct smishing/phishing classification.
     
-    Uses single-token label mapping to extract logits for "Positive" and "Negative"
-    tokens for binary sentiment classification.
+    Uses single-token label mapping to extract logits for "Legitimate" and "Smishing"
+    tokens for binary smishing detection (0 = Legitimate, 1 = Smishing/Spam).
     """
     
     def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", device=None):
         """
-        Initialize the Qwen sentiment classifier.
+        Initialize the Qwen smishing classifier.
         
         Args:
             model_name: Hugging Face model identifier
@@ -55,38 +55,38 @@ class QwenSentimentClassifier(ModelWrapper):
             raise RuntimeError(f"Error loading model: {e}")
         
         # Get token IDs for label tokens
-        self.negative_token_id, self.positive_token_id = self._get_label_token_ids()
-        print(f"Label token IDs - Negative: {self.negative_token_id}, Positive: {self.positive_token_id}")
+        self.legitimate_token_id, self.smishing_token_id = self._get_label_token_ids()
+        print(f"Label token IDs - Legitimate: {self.legitimate_token_id}, Smishing: {self.smishing_token_id}")
     
     def _get_label_token_ids(self):
         """
-        Find token IDs for "Positive" and "Negative" labels.
+        Find token IDs for "Legitimate" and "Smishing" labels.
         Handles single-token and multi-token cases.
         
         Returns:
-            tuple: (negative_token_id, positive_token_id)
+            tuple: (legitimate_token_id, smishing_token_id)
         """
         # Try to get single tokens first
-        negative_tokens = self.tokenizer.encode("Negative", add_special_tokens=False)
-        positive_tokens = self.tokenizer.encode("Positive", add_special_tokens=False)
+        legitimate_tokens = self.tokenizer.encode("Legitimate", add_special_tokens=False)
+        smishing_tokens = self.tokenizer.encode("Smishing", add_special_tokens=False)
         
         # Use first token if multi-token, or the single token
-        negative_token_id = negative_tokens[0] if negative_tokens else None
-        positive_token_id = positive_tokens[0] if positive_tokens else None
+        legitimate_token_id = legitimate_tokens[0] if legitimate_tokens else None
+        smishing_token_id = smishing_tokens[0] if smishing_tokens else None
         
         # Verify tokens exist in vocabulary
-        if negative_token_id is None or positive_token_id is None:
-            raise ValueError("Could not find token IDs for 'Positive' and 'Negative' labels")
+        if legitimate_token_id is None or smishing_token_id is None:
+            raise ValueError("Could not find token IDs for 'Legitimate' and 'Smishing' labels")
         
         # Check if tokens are the same (shouldn't happen, but safety check)
-        if negative_token_id == positive_token_id:
-            raise ValueError("'Positive' and 'Negative' map to the same token ID")
+        if legitimate_token_id == smishing_token_id:
+            raise ValueError("'Legitimate' and 'Smishing' map to the same token ID")
         
-        return negative_token_id, positive_token_id
+        return legitimate_token_id, smishing_token_id
     
-    def _format_sentiment_prompt(self, text):
+    def _format_smishing_prompt(self, text):
         """
-        Format a text input into a sentiment classification prompt.
+        Format a text input into a smishing classification prompt.
         
         Args:
             text: Input text to classify
@@ -94,21 +94,21 @@ class QwenSentimentClassifier(ModelWrapper):
         Returns:
             str: Formatted prompt string
         """
-        prompt = f"Classify the sentiment of the following text as either Positive or Negative.\n\nText: {text}\n\nSentiment:"
+        prompt = f"Classify the following message as either Legitimate or Smishing (phishing/spam).\n\nMessage: {text}\n\nClassification:"
         return prompt
     
     def _get_logits_for_text(self, text):
         """
-        Get logits for Positive and Negative tokens for a single text.
+        Get logits for Legitimate and Smishing tokens for a single text.
         
         Args:
             text: Input text string
             
         Returns:
-            torch.Tensor: Logits tensor of shape [2] with [negative_logit, positive_logit]
+            torch.Tensor: Logits tensor of shape [2] with [legitimate_logit, smishing_logit]
         """
         # Format prompt
-        prompt = self._format_sentiment_prompt(text)
+        prompt = self._format_smishing_prompt(text)
         
         # Format using chat template
         messages = [{"role": "user", "content": prompt}]
@@ -129,11 +129,11 @@ class QwenSentimentClassifier(ModelWrapper):
         # Get logits at the last token position (where model would generate next token)
         last_token_logits = logits[0, -1, :]  # Shape: [vocab_size]
         
-        # Extract logits for Positive and Negative tokens
-        negative_logit = last_token_logits[self.negative_token_id].item()
-        positive_logit = last_token_logits[self.positive_token_id].item()
+        # Extract logits for Legitimate and Smishing tokens
+        legitimate_logit = last_token_logits[self.legitimate_token_id].item()
+        smishing_logit = last_token_logits[self.smishing_token_id].item()
         
-        return torch.tensor([negative_logit, positive_logit])
+        return torch.tensor([legitimate_logit, smishing_logit])
     
     def __call__(self, text_input_list, **kwargs):
         """
@@ -145,7 +145,7 @@ class QwenSentimentClassifier(ModelWrapper):
             
         Returns:
             torch.Tensor: Logits tensor of shape (batch_size, 2)
-                         Each row: [negative_logit, positive_logit]
+                         Each row: [legitimate_logit, smishing_logit]
         """
         if not isinstance(text_input_list, list):
             text_input_list = [text_input_list]
@@ -168,7 +168,7 @@ class QwenSentimentClassifier(ModelWrapper):
             
         Returns:
             torch.Tensor: Probabilities tensor of shape (batch_size, 2)
-                         Each row: [P(negative), P(positive)]
+                         Each row: [P(legitimate), P(smishing)]
         """
         logits = self.__call__(text_input_list)
         return F.softmax(logits, dim=-1)
@@ -181,27 +181,27 @@ class QwenSentimentClassifier(ModelWrapper):
             text_input_list: List of input strings
             
         Returns:
-            list: List of predicted labels ("Positive" or "Negative")
+            list: List of predicted labels ("Legitimate" or "Smishing")
         """
         logits = self.__call__(text_input_list)
         predictions = torch.argmax(logits, dim=-1)
-        return ["Positive" if pred == 1 else "Negative" for pred in predictions]
+        return ["Smishing" if pred == 1 else "Legitimate" for pred in predictions]
 
 
 if __name__ == "__main__":
     # Demo usage
     print("=" * 80)
-    print("Qwen Sentiment Classifier Demo")
+    print("Qwen Smishing Classifier Demo")
     print("=" * 80)
     
     # Initialize classifier
-    classifier = QwenSentimentClassifier()
+    classifier = QwenSmishingClassifier()
     
     # Test examples
     test_texts = [
-        "I love this movie! It's amazing!",
-        "This is terrible. I hate it.",
-        "The weather is okay today.",
+        "Your package arrives at the Cyprus Post Office tomorrow.Confirm delivery: https://51.fi/aJzP", # smishing example
+        "Shipped: Your Amazon package with Old Spice High Endurance Deodorant will be delivered Tue, May 24. Track at http://a.co/4SJitSA", # legitimate example
+        "FREE entry into our £250 weekly comp just send the word ENTER to 88877 NOW. 18 T&C www.textcomp.com", # spam example
     ]
     
     print("\n" + "=" * 80)
@@ -213,11 +213,11 @@ if __name__ == "__main__":
         
         # Get logits (TextAttack-compatible)
         logits = classifier([text])  # Note: expects list
-        print(f"Logits [Negative, Positive]: {logits[0].tolist()}")
+        print(f"Logits [Legitimate, Smishing]: {logits[0].tolist()}")
         
         # Get probabilities
         probs = classifier.predict_proba([text])
-        print(f"Probabilities [P(Negative), P(Positive)]: {probs[0].tolist()}")
+        print(f"Probabilities [P(Legitimate), P(Smishing)]: {probs[0].tolist()}")
         
         # Get prediction
         pred = classifier.predict([text])
