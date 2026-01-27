@@ -6,19 +6,19 @@ os.environ['OMP_NUM_THREADS'] = '1'
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from textattack.models.wrappers import ModelWrapper
 
 
 class QwenSmishingClassifier(ModelWrapper):
     """
-    TextAttack-compatible wrapper for Qwen2.5-7B-Instruct smishing/phishing classification.
+    TextAttack-compatible wrapper for Qwen2.5-VL-7B-Instruct smishing/phishing classification.
     
     Uses single-token label mapping to extract logits for "Legitimate" and "Smishing"
     tokens for binary smishing detection (0 = Legitimate, 1 = Smishing/Spam).
     """
     
-    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct", device=None):
+    def __init__(self, model_name="Qwen/Qwen2.5-VL-7B-Instruct", device=None):
         """
         Initialize the Qwen smishing classifier.
         
@@ -27,30 +27,22 @@ class QwenSmishingClassifier(ModelWrapper):
             device: torch device (auto-detected if None)
         """
         super().__init__()
-        
-        # Set device
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         print(f"Loading Qwen model: {model_name}")
         print(f"Using device: {self.device}")
         
-        # Load tokenizer and model
+        # Load processor and model
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
+            self.processor = AutoProcessor.from_pretrained(model_name)
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_name,
-                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+                dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
                 device_map="cuda:0" if self.device.type == "cuda" else None,
             )
             
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
-            
-            print("Model loaded successfully!")
-            
         except Exception as e:
             raise RuntimeError(f"Error loading model: {e}")
         
@@ -67,8 +59,8 @@ class QwenSmishingClassifier(ModelWrapper):
             tuple: (legitimate_token_id, smishing_token_id)
         """
         # Try to get single tokens first
-        legitimate_tokens = self.tokenizer.encode("Legitimate", add_special_tokens=False)
-        smishing_tokens = self.tokenizer.encode("Smishing", add_special_tokens=False)
+        legitimate_tokens = self.processor.tokenizer.encode("Legitimate", add_special_tokens=False)
+        smishing_tokens = self.processor.tokenizer.encode("Smishing", add_special_tokens=False)
         
         # Use first token if multi-token, or the single token
         legitimate_token_id = legitimate_tokens[0] if legitimate_tokens else None
@@ -110,16 +102,23 @@ class QwenSmishingClassifier(ModelWrapper):
         # Format prompt
         prompt = self._format_smishing_prompt(text)
         
-        # Format using chat template
-        messages = [{"role": "user", "content": prompt}]
-        formatted_text = self.tokenizer.apply_chat_template(
+        # Format using chat template (multimodal structure, text-only)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
+        formatted_text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
         
         # Tokenize input
-        inputs = self.tokenizer([formatted_text], return_tensors="pt").to(self.device)
+        inputs = self.processor.tokenizer([formatted_text], return_tensors="pt").to(self.device)
         
         # Forward pass (no generation, just get logits)
         with torch.no_grad():

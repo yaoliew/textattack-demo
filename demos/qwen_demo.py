@@ -1,3 +1,4 @@
+#basic demo of qwen2.5-vl-7b-instruct model prompting, not actual classifier
 import os
 # Suppress OpenBLAS warnings about OpenMP
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -5,33 +6,33 @@ os.environ['GOTO_NUM_THREADS'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 
 
 def demo_qwen2_5_7b_instruct():
     """
-    Basic demo of Qwen2.5-7B-Instruct model.
+    Basic demo of Qwen2.5-VL-7B-Instruct model.
     This script demonstrates how to load and use the model for text generation.
     """
     print("=" * 80)
-    print("Qwen2.5-7B-Instruct Demo")
+    print("Qwen2.5-VL-7B-Instruct Demo")
     print("=" * 80)
     
-    # Check de!ce availability
+    # Check device availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
     
     # Model name
-    model_name = "Qwen/Qwen2.5-7B-Instruct"
+    model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
     print(f"Loading model: {model_name}")
     print("This may take a few minutes on first run...\n")
     
-    # Load tokenizer and model
+    # Load processor and model
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
+        processor = AutoProcessor.from_pretrained(model_name)
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+            dtype=torch.float16 if device.type == "cuda" else torch.float32,
             device_map="auto" if device.type == "cuda" else None,
         )
         
@@ -63,18 +64,23 @@ def demo_qwen2_5_7b_instruct():
         print(f"Prompt: {prompt}")
         print(f"{'='*80}")
         
-        # Format prompt for chat model
+        # Format prompt for chat model (multimodal structure, text-only)
         messages = [
-            {"role": "user", "content": prompt}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt}
+                ]
+            }
         ]
         
-        # Tokenize input
-        text = tokenizer.apply_chat_template(
+        # Process input
+        text = processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
-        model_inputs = tokenizer([text], return_tensors="pt").to(device)
+        model_inputs = processor.tokenizer([text], return_tensors="pt").to(device)
         
         # Generate response
         with torch.no_grad():
@@ -90,7 +96,7 @@ def demo_qwen2_5_7b_instruct():
         generated_ids = [
             output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
         ]
-        response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        response = processor.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
         
         print(f"\nResponse:\n{response}\n")
     
