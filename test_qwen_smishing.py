@@ -3,10 +3,6 @@ Demo script showing how to use QwenSmishingClassifier with TextAttack.
 """
 
 import os
-# Suppress OpenBLAS warnings about OpenMP
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
-os.environ['GOTO_NUM_THREADS'] = '1'
-os.environ['OMP_NUM_THREADS'] = '1'
 
 import ast 
 import torch
@@ -141,7 +137,6 @@ if __name__ == "__main__":
     print("Loading Qwen Smishing Classifier (shared across all tests)")
     print("=" * 80)
     model_wrapper = QwenSmishingClassifier()
-    print("\nModel loaded! Reusing this instance for all tests.\n")
     
     # Run basic classification test
     test_basic_classification(model_wrapper)
