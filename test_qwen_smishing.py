@@ -12,6 +12,7 @@ from textattack.datasets import Dataset
 from textattack import Attack, Attacker, AttackArgs
 from textattack.search_methods import GreedySearch
 from textattack.transformations import WordSwap
+from textattack.attack_recipes.hotflip_ebrahimi_2017 import HotFlipEbrahimi2017
 from textattack.constraints.pre_transformation import (
     RepeatModification,
     StopwordModification,
@@ -60,7 +61,27 @@ def test_basic_classification(classifier):
     probs = classifier.predict_proba(test_texts)
     print(f"\nProbabilities:\n{probs}")
 
-
+def test_hotflip_attack(model_wrapper):
+    """Test HotFlip attack."""
+    print("\n" + "=" * 80)
+    print("HotFlip Attack Test")
+    print("=" * 80)
+    
+    # Create goal function
+    attack = HotFlipEbrahimi2017.build(model_wrapper)
+    attack_args = AttackArgs(num_examples=3)
+    test_dataset = load_tuple_dataset("smishing_data/dataset_cleaned_tuples.txt")  # Test on all 3 examples
+    attacker = Attacker(attack, test_dataset, attack_args)
+    attack_results = attacker.attack_dataset()
+    
+    print("\n" + "="*80)
+    print("Attack Results")
+    print("="*80)
+    for i, result in enumerate(attack_results, 1):
+        print(f"\n{'='*45} Result {i} {'='*45}")
+        print(str(result) if hasattr(result, '__str__') else result)
+        print()
+    
 def test_textattack_integration(model_wrapper):
     """Test integration with TextAttack - modeled after main.py."""
     print("\n" + "=" * 80)
@@ -144,6 +165,12 @@ if __name__ == "__main__":
     # Clear CUDA cache between tests
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    
+    try: 
+        test_hotflip_attack(model_wrapper)
+    except Exception as e:
+        print(f"\nError in HotFlip attack test: {e}")
+        print("This might be due to missing dependencies or model loading issues.")
     
     # Run TextAttack integration test
     try:

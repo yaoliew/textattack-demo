@@ -90,7 +90,10 @@ class QwenSmishingClassifier(ModelWrapper):
                 self.model = self.model.to(self.device)
         except Exception as e:
             raise RuntimeError(f"Error loading model: {e}")
-        
+
+        # Expose processor as tokenizer for attack recipes
+        self.tokenizer = self.processor.tokenizer
+
         # Get token IDs for label tokens
         self.legitimate_token_id, self.smishing_token_id = self._get_label_token_ids()
         print(f"Label token IDs - Legitimate: {self.legitimate_token_id}, Smishing: {self.smishing_token_id}")
