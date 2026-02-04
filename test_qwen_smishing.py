@@ -64,64 +64,6 @@ class AttackMetricsTracker:
         self.num_queries = []
         self.perturbed_word_percentages = []
         
-    def compute_embedding_distance(self, text1: str, text2: str) -> Tuple[float, float]:
-        """
-        Compute L2 and L∞ norms between embeddings of two texts.
-        
-        Args:
-            text1: Original text
-            text2: Adversarial text
-            
-        Returns:
-            Tuple of (L2_norm, L∞_norm)
-        """
-        try:
-            # Get embeddings from the model's tokenizer and model
-            tokenizer = self.model_wrapper.tokenizer
-            
-            # Tokenize both texts
-            tokens1 = tokenizer(text1, return_tensors="pt", padding=True, truncation=True, max_length=512)
-            tokens2 = tokenizer(text2, return_tensors="pt", padding=True, truncation=True, max_length=512)
-            
-            # Get embeddings from model (if available)
-            # For Qwen, we'll use the model's embedding layer
-            if hasattr(self.model_wrapper, 'model') and hasattr(self.model_wrapper.model, 'model'):
-                with torch.no_grad():
-                    # Get word embeddings
-                    emb1 = self.model_wrapper.model.model.embed_tokens(tokens1['input_ids'].to(self.model_wrapper.device))
-                    emb2 = self.model_wrapper.model.model.embed_tokens(tokens2['input_ids'].to(self.model_wrapper.device))
-                    
-                    # Average pool to get sentence embeddings
-                    emb1 = emb1.mean(dim=1).squeeze().cpu()
-                    emb2 = emb2.mean(dim=1).squeeze().cpu()
-                    
-                    # Compute L2 norm (Euclidean distance)
-                    l2_norm = torch.norm(emb1 - emb2, p=2).item()
-                    
-                    # Compute L∞ norm (max absolute difference)
-                    linf_norm = torch.norm(emb1 - emb2, p=float('inf')).item()
-                    
-                    return l2_norm, linf_norm
-            else:
-                # Fallback: use token-level differences
-                # Simple approximation using token IDs
-                ids1 = tokens1['input_ids'].squeeze().cpu().float()
-                ids2 = tokens2['input_ids'].squeeze().cpu().float()
-                
-                # Pad to same length
-                max_len = max(len(ids1), len(ids2))
-                ids1_padded = F.pad(ids1, (0, max_len - len(ids1)), value=0)
-                ids2_padded = F.pad(ids2, (0, max_len - len(ids2)), value=0)
-                
-                diff = ids1_padded - ids2_padded
-                l2_norm = torch.norm(diff, p=2).item()
-                linf_norm = torch.norm(diff, p=float('inf')).item()
-                
-                return l2_norm, linf_norm
-        except Exception as e:
-            print(f"Warning: Could not compute embedding distance: {e}")
-            return 0.0, 0.0
-    
     def record_attack_result(self, result: AttackResult, original_text: str, 
                             original_label: int, attack_time: float):
         """Record a single attack result."""
@@ -203,36 +145,13 @@ class AttackMetricsTracker:
         
         metrics = {}
         
-        # Clean accuracy (accuracy on original examples)
-        correct_clean = sum(1 for i in range(len(self.original_labels)) 
-                           if self.clean_predictions[i] == self.original_labels[i])
-        metrics['clean_accuracy'] = correct_clean / len(self.original_labels) if self.original_labels else 0.0
-        
         # Robust accuracy (accuracy on adversarial examples)
         correct_robust = sum(1 for i in range(len(self.original_labels)) 
                            if self.robust_predictions[i] == self.original_labels[i])
         metrics['robust_accuracy'] = correct_robust / len(self.original_labels) if self.original_labels else 0.0
         
-        # Attack Success Rate (ASR)
-        successful_attacks = sum(self.success_flags)
-        metrics['asr'] = successful_attacks / len(self.success_flags) if self.success_flags else 0.0
-        
-        # Average L2 and L∞ norms (only for successful attacks)
-        l2_norms = []
-        linf_norms = []
-        for i, success in enumerate(self.success_flags):
-            if success:
-                l2, linf = self.compute_embedding_distance(
-                    self.original_texts[i], 
-                    self.adversarial_texts[i]
-                )
-                l2_norms.append(l2)
-                linf_norms.append(linf)
-        
-        metrics['avg_l2_norm'] = np.mean(l2_norms) if l2_norms else 0.0
-        metrics['avg_linf_norm'] = np.mean(linf_norms) if linf_norms else 0.0
-        
         # Attack time per sample
+        successful_attacks = sum(self.success_flags)
         metrics['avg_attack_time_per_sample'] = np.mean(self.attack_times) if self.attack_times else 0.0
         metrics['total_attack_time'] = sum(self.attack_times)
         
@@ -287,13 +206,7 @@ class AttackMetricsTracker:
         print("=" * 80)
         
         print(f"\n📊 Accuracy Metrics:")
-        print(f"  Clean Accuracy:     {metrics.get('clean_accuracy', 0.0):.2%}")
         print(f"  Robust Accuracy:    {metrics.get('robust_accuracy', 0.0):.2%}")
-        print(f"  Attack Success Rate (ASR): {metrics.get('asr', 0.0):.2%}")
-        
-        print(f"\n📏 Distance Metrics:")
-        print(f"  Average L2 Norm:    {metrics.get('avg_l2_norm', 0.0):.4f}")
-        print(f"  Average L∞ Norm:    {metrics.get('avg_linf_norm', 0.0):.4f}")
         
         print(f"\n⏱️  Timing Metrics:")
         print(f"  Average Attack Time/Sample: {metrics.get('avg_attack_time_per_sample', 0.0):.2f} seconds")
@@ -322,28 +235,92 @@ class AttackMetricsTracker:
 
 
 def test_basic_classification(classifier):
-    """Test basic smishing classification."""
+    """Test basic smishing classification accuracy on the entire dataset."""
     print("=" * 80)
-    print("Basic Classification Test")
+    print("Basic Classification Test (Full Dataset)")
     print("=" * 80)
     
-    test_texts = [
-        "Your package arrives at the Cyprus Post Office tomorrow.Confirm delivery: https://51.fi/aJzP",
-        "Shipped: Your Amazon package with Old Spice High Endurance Deodorant will be delivered Tue, May 24. Track at http://a.co/4SJitSA",
-    ]
+    # Load entire dataset (not limited to 200)
+    print("\nLoading entire dataset...")
+    examples = []
+    with open("smishing_data/dataset_cleaned_tuples.txt", "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            text, label = ast.literal_eval(line)  # parses "('text', 0)"
+            examples.append((text, int(label)))
     
-    # Test __call__ method (TextAttack interface)
-    logits = classifier(test_texts)
-    print(f"\nLogits shape: {logits.shape}")  # Should be (2, 2)
-    print(f"Logits:\n{logits}")
+    print(f"Loaded {len(examples)} examples from dataset")
     
-    # Test predictions
-    predictions = classifier.predict(test_texts)
-    print(f"\nPredictions: {predictions}")
+    # Extract texts and labels
+    texts = []
+    true_labels = []
+    for text, label in examples:
+        texts.append(text)
+        true_labels.append(label)  # 0 = Legitimate, 1 = Smishing
     
-    # Test probabilities
-    probs = classifier.predict_proba(test_texts)
-    print(f"\nProbabilities:\n{probs}")
+    
+    print(f"\nTesting classifier on {len(texts)} examples...")
+    print("This may take a while...")
+    
+    # Get predictions in batches to avoid memory issues
+    batch_size = 10
+    all_predictions = []
+    all_probs = []
+    
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i+batch_size]
+        batch_predictions = classifier.predict(batch_texts)
+        batch_probs = classifier.predict_proba(batch_texts)
+        
+        # Convert predictions to labels (0 = Legitimate, 1 = Smishing)
+        batch_pred_labels = [1 if pred == "Smishing" else 0 for pred in batch_predictions]
+        all_predictions.extend(batch_pred_labels)
+        all_probs.extend(batch_probs.tolist())
+        
+        if (i // batch_size + 1) % 10 == 0:
+            print(f"  Processed {min(i + batch_size, len(texts))} / {len(texts)} examples...")
+    
+    # Calculate accuracy
+    correct = sum(1 for pred, true in zip(all_predictions, true_labels) if pred == true)
+    accuracy = correct / len(true_labels) if true_labels else 0.0
+    
+    # Calculate per-class accuracy
+    legitimate_indices = [i for i, label in enumerate(true_labels) if label == 0]
+    smishing_indices = [i for i, label in enumerate(true_labels) if label == 1]
+    
+    legitimate_correct = sum(1 for i in legitimate_indices if all_predictions[i] == 0)
+    smishing_correct = sum(1 for i in smishing_indices if all_predictions[i] == 1)
+    
+    legitimate_accuracy = legitimate_correct / len(legitimate_indices) if legitimate_indices else 0.0
+    smishing_accuracy = smishing_correct / len(smishing_indices) if smishing_indices else 0.0
+    
+    # Confusion matrix
+    cm = confusion_matrix(true_labels, all_predictions, labels=[0, 1])
+    
+    # Print results
+    print("\n" + "=" * 80)
+    print("CLASSIFICATION RESULTS")
+    print("=" * 80)
+    print(f"\nOverall Accuracy: {accuracy:.2%} ({correct}/{len(true_labels)})")
+    print(f"Legitimate Accuracy: {legitimate_accuracy:.2%} ({legitimate_correct}/{len(legitimate_indices)})")
+    print(f"Smishing Accuracy: {smishing_accuracy:.2%} ({smishing_correct}/{len(smishing_indices)})")
+    
+    print(f"\nConfusion Matrix:")
+    print(f"                    Predicted")
+    print(f"                  Legitimate  Smishing")
+    print(f"  Actual Legitimate    {cm[0][0]:4d}      {cm[0][1]:4d}")
+    print(f"  Actual Smishing     {cm[1][0]:4d}      {cm[1][1]:4d}")
+    
+    # Class distribution
+    num_legitimate = len(legitimate_indices)
+    num_smishing = len(smishing_indices)
+    print(f"\nDataset Distribution:")
+    print(f"  Legitimate: {num_legitimate} ({num_legitimate/len(true_labels):.1%})")
+    print(f"  Smishing:   {num_smishing} ({num_smishing/len(true_labels):.1%})")
+    
+    print("\n" + "=" * 80)
 
 def test_pwws_attack(model_wrapper):
     """Test PWWS attack with comprehensive debugging."""
@@ -402,11 +379,11 @@ def test_pwws_attack(model_wrapper):
     # Stage 4: Create attack arguments
     print("\n[DEBUG] Stage 4: Creating attack arguments...")
     try:
-        # Use full dataset - don't limit num_examples
+        # Use first 200 entries from dataset
         dataset_size = len(test_dataset)
         attack_args = AttackArgs(num_examples=dataset_size)
         print(f"[DEBUG] Attack args type: {type(attack_args)}")
-        print(f"[DEBUG] Number of examples: {attack_args.num_examples} (full dataset)")
+        print(f"[DEBUG] Number of examples: {attack_args.num_examples} (first 200 entries)")
         print("[DEBUG] ✓ Attack arguments creation passed")
     except Exception as e:
         print(f"[DEBUG] ✗ Attack arguments creation failed: {e}")
@@ -546,34 +523,6 @@ def test_textattack_integration(model_wrapper):
         print(str(result) if hasattr(result, '__str__') else result)
         print()
 
-
-def test_simple_attack(model_wrapper):
-    """Test a simple attack setup (without running full attack)."""
-    print("\n" + "=" * 80)
-    print("Simple Attack Setup Test")
-    print("=" * 80)
-    
-    # Create goal function
-    goal_function = UntargetedClassification(model_wrapper)
-    
-    # Create simple transformation (word swap)
-    transformation = SimpleWordSwap()
-    
-    # Create constraints
-    constraints = [RepeatModification(), StopwordModification()]
-    
-    # Create search method
-    search_method = GreedySearch()
-    
-    # Create attack
-    attack = Attack(goal_function, constraints, transformation, search_method)
-    
-    print("\nAttack created successfully!")
-    print("The wrapper is compatible with TextAttack's attack framework.")
-    print("\nNote: This test only creates the attack object.")
-    print("See test_textattack_integration() for a full attack execution.")
-
-
 if __name__ == "__main__":
     # Load model once and reuse across all tests
     print("=" * 80)
@@ -582,7 +531,7 @@ if __name__ == "__main__":
     model_wrapper = QwenSmishingClassifier()
     
     # Run basic classification test
-    # test_basic_classification(model_wrapper)
+    test_basic_classification(model_wrapper)
     
     # Clear CUDA cache between tests
     # if torch.cuda.is_available():
