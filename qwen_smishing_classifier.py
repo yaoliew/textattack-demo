@@ -801,9 +801,10 @@ class QwenSmishingClassifier(ModelWrapper):
             text_input_list = [text_input_list]
         
         # Process each text and collect logits
+        # Use simple logits for TextAttack to avoid expensive network/API calls
         batch_logits = []
         for text in text_input_list:
-            logits = self._get_logits_for_text(text)
+            logits = self._get_simple_logits(text)
             batch_logits.append(logits)
         
         # Stack into batch tensor: shape (batch_size, 2)
