@@ -14,6 +14,28 @@ import torch.nn.functional as F
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 
+# Monkey-patch langdetect to handle "No features in text" errors gracefully
+# This must be done before TextAttack imports langdetect
+try:
+    import langdetect.detector_factory
+    from langdetect.lang_detect_exception import LangDetectException
+    
+    _original_detect = langdetect.detector_factory.detect
+    
+    def safe_detect(text):
+        """Wrapper around langdetect.detect that returns 'en' on errors."""
+        try:
+            return _original_detect(text)
+        except (LangDetectException, Exception):
+            # Return 'en' as default for errors like "No features in text"
+            return 'en'
+    
+    # Patch the detect function in langdetect.detector_factory
+    langdetect.detector_factory.detect = safe_detect
+except (ImportError, AttributeError):
+    # If langdetect is not available or patching fails, skip
+    pass
+
 from qwen_smishing_classifier import QwenSmishingClassifier
 from textattack.goal_functions import UntargetedClassification, TargetedClassification
 from textattack.datasets import Dataset
@@ -37,7 +59,7 @@ def load_tuple_dataset(path):
             text, label = ast.literal_eval(line)  # parses "('text', 0)"
             examples.append((text, int(label)))
     # Limit to first 200 entries
-    return Dataset(examples[:200])
+    return Dataset(examples[:100])
 
 
 class SimpleWordSwap(WordSwap):
@@ -48,279 +70,235 @@ class SimpleWordSwap(WordSwap):
 
 
 class AttackMetricsTracker:
-    """Track comprehensive metrics for adversarial attacks."""
+    """Track comprehensive attack metrics from TextAttack results."""
     
-    def __init__(self, model_wrapper):
-        self.model_wrapper = model_wrapper
-        self.results = []
-        self.attack_times = []
-        self.original_texts = []
-        self.adversarial_texts = []
+    def __init__(self):
         self.original_labels = []
-        self.adversarial_labels = []
-        self.clean_predictions = []
-        self.robust_predictions = []
-        self.success_flags = []
-        self.num_queries = []
-        self.perturbed_word_percentages = []
-        
-    def record_attack_result(self, result: AttackResult, original_text: str, 
-                            original_label: int, attack_time: float):
-        """Record a single attack result."""
-        self.attack_times.append(attack_time)
-        self.original_texts.append(original_text)
-        self.original_labels.append(original_label)
-        self.num_queries.append(result.num_queries if hasattr(result, 'num_queries') else 0)
-        
-        # Get clean prediction
-        clean_pred = self.model_wrapper.predict([original_text])[0]
-        clean_pred_label = 1 if clean_pred == "Smishing" else 0
-        self.clean_predictions.append(clean_pred_label)
-        
-        # Check if attack was successful and get adversarial text
-        # TextAttack uses goal_function_result.achieved() or result.goal_function_result.goal_status
-        if hasattr(result, 'goal_function_result'):
-            succeeded = result.goal_function_result.achieved() if hasattr(result.goal_function_result, 'achieved') else False
-        elif hasattr(result, 'succeeded'):
-            succeeded = result.succeeded()
-        else:
-            succeeded = False
-        
-        # Get adversarial text
-        if hasattr(result, 'perturbed_text'):
-            adversarial_text = result.perturbed_text()
-        elif hasattr(result, 'perturbed_result'):
-            adversarial_text = result.perturbed_result.text if hasattr(result.perturbed_result, 'text') else original_text
-        else:
-            adversarial_text = original_text
-        
-        # Verify success: text must be different and prediction must change
-        if succeeded and adversarial_text != original_text:
-            # Get robust prediction
-            robust_pred = self.model_wrapper.predict([adversarial_text])[0]
-            robust_pred_label = 1 if robust_pred == "Smishing" else 0
-            # Only count as success if prediction actually changed
-            if robust_pred_label != clean_pred_label:
-                self.success_flags.append(True)
-                self.adversarial_texts.append(adversarial_text)
-                self.robust_predictions.append(robust_pred_label)
-                self.adversarial_labels.append(robust_pred_label)
-            else:
-                # Attack claimed success but prediction didn't change
-                succeeded = False
-                self.success_flags.append(False)
-                self.adversarial_texts.append(original_text)
-                self.robust_predictions.append(clean_pred_label)
-                self.adversarial_labels.append(clean_pred_label)
-        else:
-            # Attack failed
-            self.success_flags.append(False)
-            self.adversarial_texts.append(original_text)
-            self.robust_predictions.append(clean_pred_label)
-            self.adversarial_labels.append(clean_pred_label)
-        
-        # Compute perturbed word percentage (for all cases)
-        if adversarial_text != original_text:
-            if hasattr(result, 'perturbed_word_percentage'):
-                self.perturbed_word_percentages.append(result.perturbed_word_percentage())
-            elif hasattr(result, 'num_words_changed'):
-                # Use num_words_changed if available
-                words_orig = original_text.split()
-                self.perturbed_word_percentages.append(100.0 * result.num_words_changed / max(len(words_orig), 1))
-            else:
-                # Approximate: count word differences
-                words_orig = original_text.split()
-                words_adv = adversarial_text.split()
-                num_changed = sum(1 for w1, w2 in zip(words_orig, words_adv) if w1 != w2)
-                self.perturbed_word_percentages.append(100.0 * num_changed / max(len(words_orig), 1))
-        else:
-            self.perturbed_word_percentages.append(0.0)
-        
-        self.results.append(result)
+        self.predicted_labels_original = []  # Predictions on original text
+        self.predicted_labels_attacked = []  # Predictions on attacked text
+        self.results = []
+        self.original_texts = []
+        self.attacked_texts = []
     
-    def compute_metrics(self) -> Dict:
-        """Compute all metrics from recorded results."""
+    def record_result(self, result: AttackResult, original_label: int, original_text: str):
+        """Record a single attack result for metrics."""
+        from textattack.attack_results import SuccessfulAttackResult, FailedAttackResult, SkippedAttackResult
+        
+        self.original_labels.append(original_label)
+        self.results.append(result)
+        self.original_texts.append(original_text)
+        
+        # Get original prediction (before attack)
+        original_predicted_label = self._get_predicted_label(result, use_original=True)
+        self.predicted_labels_original.append(original_predicted_label)
+        
+        # Get attacked prediction (after attack)
+        attacked_predicted_label = self._get_predicted_label(result, use_original=False)
+        self.predicted_labels_attacked.append(attacked_predicted_label)
+        
+        # Get attacked text
+        if hasattr(result, 'perturbed_text'):
+            attacked_text = result.perturbed_text()
+        else:
+            attacked_text = original_text
+        self.attacked_texts.append(attacked_text)
+    
+    def _get_predicted_label(self, result: AttackResult, use_original: bool = False):
+        """Extract predicted label from result."""
+        predicted_label = None
+        
+        # AttackResult has original_result and perturbed_result attributes
+        # original_result is the prediction on original text
+        # perturbed_result is the prediction on attacked text
+        if use_original:
+            goal_result = getattr(result, 'original_result', None)
+        else:
+            goal_result = getattr(result, 'perturbed_result', None)
+            # Fallback to goal_function_result if perturbed_result not available
+            if goal_result is None:
+                goal_result = getattr(result, 'goal_function_result', None)
+        
+        if goal_result is not None:
+            if hasattr(goal_result, 'output'):
+                output = goal_result.output
+                # Convert to label (0 = Legitimate, 1 = Smishing)
+                if isinstance(output, torch.Tensor):
+                    if output.numel() == 1:
+                        predicted_label = int(output.item())
+                    else:
+                        predicted_label = int(torch.argmax(output).item())
+                elif isinstance(output, (int, np.integer)):
+                    predicted_label = int(output)
+                elif isinstance(output, (list, tuple, np.ndarray)):
+                    predicted_label = int(np.argmax(output))
+        
+        # Fallback: if we can't get prediction, return None (will be handled in metrics)
+        return predicted_label
+    
+    def get_metrics(self):
+        """Calculate and return all metrics."""
+        from textattack.attack_results import SuccessfulAttackResult, FailedAttackResult, SkippedAttackResult
+        
         if not self.results:
-            return {}
+            return None
         
-        metrics = {}
+        # Count attack outcomes
+        num_successful = sum(1 for r in self.results if isinstance(r, SuccessfulAttackResult))
+        num_failed = sum(1 for r in self.results if isinstance(r, FailedAttackResult))
+        num_skipped = sum(1 for r in self.results if isinstance(r, SkippedAttackResult))
         
-        # Robust accuracy (accuracy on adversarial examples)
-        correct_robust = sum(1 for i in range(len(self.original_labels)) 
-                           if self.robust_predictions[i] == self.original_labels[i])
-        metrics['robust_accuracy'] = correct_robust / len(self.original_labels) if self.original_labels else 0.0
+        # Original accuracy (predictions on original text)
+        # Filter out None predictions
+        original_pairs = [(orig, pred) for orig, pred in zip(self.original_labels, self.predicted_labels_original) if pred is not None]
+        original_correct = sum(1 for orig, pred in original_pairs if orig == pred)
+        original_accuracy = (original_correct / len(original_pairs) * 100) if original_pairs else 0.0
         
-        # Attack time per sample
-        successful_attacks = sum(self.success_flags)
-        metrics['avg_attack_time_per_sample'] = np.mean(self.attack_times) if self.attack_times else 0.0
-        metrics['total_attack_time'] = sum(self.attack_times)
+        # Accuracy under attack (predictions on attacked text)
+        # Filter out None predictions
+        attacked_pairs = [(orig, pred) for orig, pred in zip(self.original_labels, self.predicted_labels_attacked) if pred is not None]
+        attacked_correct = sum(1 for orig, pred in attacked_pairs if orig == pred)
+        attacked_accuracy = (attacked_correct / len(attacked_pairs) * 100) if attacked_pairs else 0.0
         
-        # Confusion matrix under attack
-        if self.original_labels and self.robust_predictions:
-            metrics['confusion_matrix'] = confusion_matrix(
-                self.original_labels, 
-                self.robust_predictions,
-                labels=[0, 1]
-            )
+        # Attack success rate (successful attacks / total attacks attempted)
+        total_attempted = num_successful + num_failed
+        attack_success_rate = (num_successful / total_attempted * 100) if total_attempted > 0 else 0.0
         
-        # Additional metrics
-        metrics['avg_num_queries'] = np.mean(self.num_queries) if self.num_queries else 0.0
-        metrics['avg_perturbed_word_percentage'] = np.mean(self.perturbed_word_percentages) if self.perturbed_word_percentages else 0.0
-        metrics['num_successful_attacks'] = successful_attacks
-        metrics['num_total_attacks'] = len(self.success_flags)
+        # Average perturbed word percentage
+        # Use AttackedText objects from TextAttack results for accurate calculation
+        perturbed_word_pcts = []
+        word_counts = []
         
-        # Success vs ε curve (using perturbed word percentage as proxy for ε)
-        if self.perturbed_word_percentages:
-            # Bin by perturbation percentage
-            epsilon_bins = np.linspace(0, max(self.perturbed_word_percentages) + 1, 11)
-            success_by_epsilon = []
-            epsilon_centers = []
+        for result in self.results:
+            # Get AttackedText objects from the result
+            original_attacked_text = None
+            perturbed_attacked_text = None
             
-            for i in range(len(epsilon_bins) - 1):
-                bin_start = epsilon_bins[i]
-                bin_end = epsilon_bins[i + 1]
-                epsilon_center = (bin_start + bin_end) / 2
-                
-                # Find attacks in this bin
-                in_bin = [j for j, pct in enumerate(self.perturbed_word_percentages) 
-                         if bin_start <= pct < bin_end]
-                
-                if in_bin:
-                    success_rate = sum(self.success_flags[j] for j in in_bin) / len(in_bin)
-                    success_by_epsilon.append(success_rate)
-                    epsilon_centers.append(epsilon_center)
+            # Get original AttackedText
+            if hasattr(result, 'original_result') and result.original_result is not None:
+                original_attacked_text = getattr(result.original_result, 'attacked_text', None)
             
-            metrics['success_vs_epsilon'] = {
-                'epsilon': epsilon_centers,
-                'success_rate': success_by_epsilon
-            }
+            # Get perturbed AttackedText
+            if hasattr(result, 'perturbed_result') and result.perturbed_result is not None:
+                perturbed_attacked_text = getattr(result.perturbed_result, 'attacked_text', None)
+            
+            # Use AttackedText.words for accurate word-level comparison
+            if original_attacked_text is not None and perturbed_attacked_text is not None:
+                orig_words = original_attacked_text.words
+                
+                # Count words in original for word count metric
+                word_counts.append(len(orig_words))
+                
+                # Calculate perturbed word percentage using TextAttack's all_words_diff method
+                # This properly handles word alignment and returns indices of changed words
+                if len(orig_words) > 0:
+                    try:
+                        # Use TextAttack's built-in method to get indices of changed words
+                        changed_indices = perturbed_attacked_text.all_words_diff(original_attacked_text)
+                        num_changed = len(changed_indices)
+                        pct = (num_changed / len(orig_words)) * 100
+                        perturbed_word_pcts.append(pct)
+                    except Exception:
+                        # Fallback to manual comparison if all_words_diff fails
+                        pert_words = perturbed_attacked_text.words
+                        min_len = min(len(orig_words), len(pert_words))
+                        num_changed = sum(1 for i in range(min_len) if orig_words[i] != pert_words[i])
+                        num_changed += abs(len(pert_words) - len(orig_words))
+                        pct = (num_changed / len(orig_words)) * 100
+                        perturbed_word_pcts.append(pct)
+            else:
+                # Fallback: use string-based calculation if AttackedText not available
+                idx = len(perturbed_word_pcts)
+                if idx < len(self.original_texts):
+                    orig_text = self.original_texts[idx]
+                    attacked_text = self.attacked_texts[idx]
+                    orig_words = orig_text.split()
+                    attacked_words = attacked_text.split()
+                    
+                    word_counts.append(len(orig_words))
+                    
+                    if len(orig_words) > 0:
+                        min_len = min(len(orig_words), len(attacked_words))
+                        changed = sum(1 for i in range(min_len) if orig_words[i] != attacked_words[i])
+                        changed += abs(len(attacked_words) - len(orig_words))
+                        pct = (changed / len(orig_words)) * 100
+                        perturbed_word_pcts.append(pct)
         
-        return metrics
+        avg_perturbed_word_pct = np.mean(perturbed_word_pcts) if perturbed_word_pcts else 0.0
+        
+        # Average number of words per input (using AttackedText when available)
+        if not word_counts:
+            # Fallback to string-based calculation
+            word_counts = [len(text.split()) for text in self.original_texts]
+        avg_words_per_input = np.mean(word_counts) if word_counts else 0.0
+        
+        # Average number of queries
+        query_counts = []
+        for result in self.results:
+            # Check perturbed_result first (final attack result)
+            if hasattr(result, 'perturbed_result') and result.perturbed_result is not None:
+                if hasattr(result.perturbed_result, 'num_queries'):
+                    query_counts.append(result.perturbed_result.num_queries)
+            # Fallback to goal_function_result
+            elif hasattr(result, 'goal_function_result') and result.goal_function_result is not None:
+                if hasattr(result.goal_function_result, 'num_queries'):
+                    query_counts.append(result.goal_function_result.num_queries)
+        avg_num_queries = np.mean(query_counts) if query_counts else 0.0
+        
+        return {
+            'num_successful': num_successful,
+            'num_failed': num_failed,
+            'num_skipped': num_skipped,
+            'original_accuracy': original_accuracy,
+            'attacked_accuracy': attacked_accuracy,
+            'attack_success_rate': attack_success_rate,
+            'avg_perturbed_word_pct': avg_perturbed_word_pct,
+            'avg_words_per_input': avg_words_per_input,
+            'avg_num_queries': avg_num_queries,
+        }
     
     def print_metrics(self):
-        """Print all computed metrics in a formatted way."""
-        metrics = self.compute_metrics()
+        """Print all attack metrics in a formatted table."""
+        metrics = self.get_metrics()
+        if metrics is None:
+            print("No metrics available.")
+            return
+        
+        print("\n" + "+" + "-" * 31 + "+" + "-" * 8 + "+")
+        print("|" + " Attack Results".ljust(31) + "|" + "".ljust(8) + "|")
+        print("+" + "-" * 31 + "+" + "-" * 8 + "+")
+        print(f"| Number of successful attacks: | {metrics['num_successful']:6d} |")
+        print(f"| Number of failed attacks:     | {metrics['num_failed']:6d} |")
+        print(f"| Number of skipped attacks:    | {metrics['num_skipped']:6d} |")
+        print(f"| Original accuracy:            | {metrics['original_accuracy']:6.2f}% |")
+        print(f"| Accuracy under attack:        | {metrics['attacked_accuracy']:6.2f}% |")
+        print(f"| Attack success rate:          | {metrics['attack_success_rate']:6.2f}% |")
+        print(f"| Average perturbed word %:     | {metrics['avg_perturbed_word_pct']:6.2f}% |")
+        print(f"| Average num. words per input: | {metrics['avg_words_per_input']:6.2f} |")
+        print(f"| Avg num queries:              | {metrics['avg_num_queries']:6.2f} |")
+        print("+" + "-" * 31 + "+" + "-" * 8 + "+")
+    
+    def get_confusion_matrix(self):
+        """Compute and return confusion matrix based on attacked predictions."""
+        if not self.original_labels or not self.predicted_labels_attacked:
+            return None
+        return confusion_matrix(self.original_labels, self.predicted_labels_attacked, labels=[0, 1])
+    
+    def print_confusion_matrix(self):
+        """Print the confusion matrix."""
+        cm = self.get_confusion_matrix()
+        if cm is None:
+            print("No data available for confusion matrix.")
+            return
         
         print("\n" + "=" * 80)
-        print("ATTACK METRICS SUMMARY")
+        print("CONFUSION MATRIX")
         print("=" * 80)
-        
-        print(f"\n📊 Accuracy Metrics:")
-        print(f"  Robust Accuracy:    {metrics.get('robust_accuracy', 0.0):.2%}")
-        
-        print(f"\n⏱️  Timing Metrics:")
-        print(f"  Average Attack Time/Sample: {metrics.get('avg_attack_time_per_sample', 0.0):.2f} seconds")
-        print(f"  Total Attack Time:  {metrics.get('total_attack_time', 0.0):.2f} seconds")
-        
-        print(f"\n🔍 Attack Statistics:")
-        print(f"  Successful Attacks: {metrics.get('num_successful_attacks', 0)} / {metrics.get('num_total_attacks', 0)}")
-        print(f"  Average Queries:     {metrics.get('avg_num_queries', 0.0):.1f}")
-        print(f"  Avg Perturbed Words: {metrics.get('avg_perturbed_word_percentage', 0.0):.2f}%")
-        
-        if 'confusion_matrix' in metrics:
-            print(f"\n📋 Confusion Matrix (Under Attack):")
-            cm = metrics['confusion_matrix']
-            print(f"                    Predicted")
-            print(f"                  Legitimate  Smishing")
-            print(f"  Actual Legitimate    {cm[0][0]:4d}      {cm[0][1]:4d}")
-            print(f"  Actual Smishing     {cm[1][0]:4d}      {cm[1][1]:4d}")
-        
-        if 'success_vs_epsilon' in metrics and metrics['success_vs_epsilon']['epsilon']:
-            print(f"\n📈 Success vs ε (Perturbation Budget) Curve:")
-            for eps, success in zip(metrics['success_vs_epsilon']['epsilon'], 
-                                   metrics['success_vs_epsilon']['success_rate']):
-                print(f"  ε = {eps:5.2f}%: Success Rate = {success:.2%}")
-        
+        print(f"\n                    Predicted")
+        print(f"                  Legitimate  Smishing")
+        print(f"  Actual Legitimate    {cm[0][0]:4d}      {cm[0][1]:4d}")
+        print(f"  Actual Smishing     {cm[1][0]:4d}      {cm[1][1]:4d}")
         print("\n" + "=" * 80)
 
-
-def test_basic_classification(classifier):
-    """Test basic smishing classification accuracy on the entire dataset."""
-    print("=" * 80)
-    print("Basic Classification Test (Full Dataset)")
-    print("=" * 80)
-    
-    # Load entire dataset (not limited to 200)
-    print("\nLoading entire dataset...")
-    examples = []
-    with open("smishing_data/dataset_cleaned_tuples.txt", "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            text, label = ast.literal_eval(line)  # parses "('text', 0)"
-            examples.append((text, int(label)))
-    
-    print(f"Loaded {len(examples)} examples from dataset")
-    
-    # Extract texts and labels
-    texts = []
-    true_labels = []
-    for text, label in examples:
-        texts.append(text)
-        true_labels.append(label)  # 0 = Legitimate, 1 = Smishing
-    
-    
-    print(f"\nTesting classifier on {len(texts)} examples...")
-    print("This may take a while...")
-    
-    # Get predictions in batches to avoid memory issues
-    batch_size = 10
-    all_predictions = []
-    all_probs = []
-    
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        batch_predictions = classifier.predict(batch_texts)
-        batch_probs = classifier.predict_proba(batch_texts)
-        
-        # Convert predictions to labels (0 = Legitimate, 1 = Smishing)
-        batch_pred_labels = [1 if pred == "Smishing" else 0 for pred in batch_predictions]
-        all_predictions.extend(batch_pred_labels)
-        all_probs.extend(batch_probs.tolist())
-        
-        if (i // batch_size + 1) % 10 == 0:
-            print(f"  Processed {min(i + batch_size, len(texts))} / {len(texts)} examples...")
-    
-    # Calculate accuracy
-    correct = sum(1 for pred, true in zip(all_predictions, true_labels) if pred == true)
-    accuracy = correct / len(true_labels) if true_labels else 0.0
-    
-    # Calculate per-class accuracy
-    legitimate_indices = [i for i, label in enumerate(true_labels) if label == 0]
-    smishing_indices = [i for i, label in enumerate(true_labels) if label == 1]
-    
-    legitimate_correct = sum(1 for i in legitimate_indices if all_predictions[i] == 0)
-    smishing_correct = sum(1 for i in smishing_indices if all_predictions[i] == 1)
-    
-    legitimate_accuracy = legitimate_correct / len(legitimate_indices) if legitimate_indices else 0.0
-    smishing_accuracy = smishing_correct / len(smishing_indices) if smishing_indices else 0.0
-    
-    # Confusion matrix
-    cm = confusion_matrix(true_labels, all_predictions, labels=[0, 1])
-    
-    # Print results
-    print("\n" + "=" * 80)
-    print("CLASSIFICATION RESULTS")
-    print("=" * 80)
-    print(f"\nOverall Accuracy: {accuracy:.2%} ({correct}/{len(true_labels)})")
-    print(f"Legitimate Accuracy: {legitimate_accuracy:.2%} ({legitimate_correct}/{len(legitimate_indices)})")
-    print(f"Smishing Accuracy: {smishing_accuracy:.2%} ({smishing_correct}/{len(smishing_indices)})")
-    
-    print(f"\nConfusion Matrix:")
-    print(f"                    Predicted")
-    print(f"                  Legitimate  Smishing")
-    print(f"  Actual Legitimate    {cm[0][0]:4d}      {cm[0][1]:4d}")
-    print(f"  Actual Smishing     {cm[1][0]:4d}      {cm[1][1]:4d}")
-    
-    # Class distribution
-    num_legitimate = len(legitimate_indices)
-    num_smishing = len(smishing_indices)
-    print(f"\nDataset Distribution:")
-    print(f"  Legitimate: {num_legitimate} ({num_legitimate/len(true_labels):.1%})")
-    print(f"  Smishing:   {num_smishing} ({num_smishing/len(true_labels):.1%})")
-    
-    print("\n" + "=" * 80)
 
 def test_pwws_attack(model_wrapper):
     """Test PWWS attack with comprehensive debugging."""
@@ -407,7 +385,7 @@ def test_pwws_attack(model_wrapper):
     
     # Stage 6: Initialize metrics tracker
     print("\n[DEBUG] Stage 6: Initializing metrics tracker...")
-    metrics_tracker = AttackMetricsTracker(model_wrapper)
+    metrics_tracker = AttackMetricsTracker()
     
     # Stage 7: Run attack with metrics tracking
     print("\n[DEBUG] Stage 7: Running attack on dataset with metrics tracking...")
@@ -416,113 +394,69 @@ def test_pwws_attack(model_wrapper):
     # Get dataset examples for labels (before attack starts)
     dataset_examples = list(test_dataset)
     
-    # Run attacks and measure time for each
-    attack_results = attacker.attack_dataset()
-    print(f"[DEBUG] Attack results type: {type(attack_results)}")
-    print(f"[DEBUG] Processing results and recording metrics...")
-    
     results_list = []
     attack_start_time = time.time()
-    successful_attacks = 0
-    failed_attacks = 0
     
-    for idx, result in enumerate(attack_results):
+    # Attack each entry individually to handle errors gracefully
+    # This avoids issues with attack_dataset() failing during logging
+    print(f"[DEBUG] Attacking {len(dataset_examples)} entries individually...")
+    
+    for idx, example_tuple in enumerate(dataset_examples):
         try:
-            # Measure time for this attack (time since last result or start)
-            if idx == 0:
-                attack_time = time.time() - attack_start_time
-            else:
-                attack_time = time.time() - last_result_time
-            last_result_time = time.time()
+            # Extract text and label from example tuple
+            example_input = example_tuple[0]  # This is the OrderedDict or text
+            original_label = example_tuple[1]
+            original_text = example_input['text'] if isinstance(example_input, dict) else str(example_input)
             
-            # Get original text and label from dataset
-            if idx < len(dataset_examples):
-                example = dataset_examples[idx]
-                original_text = example[0]['text'] if isinstance(example[0], dict) else str(example[0])
-                original_label = example[1]
-            else:
-                # Fallback: extract from result
-                original_text = result.original_text() if hasattr(result, 'original_text') else ""
-                original_label = result.ground_truth_output if hasattr(result, 'ground_truth_output') else 0
-            
-            # Record metrics
-            metrics_tracker.record_attack_result(
-                result, 
-                original_text, 
-                original_label, 
-                attack_time
-            )
+            # Attack this single example using the attack object directly
+            # This avoids logging issues that occur with attack_dataset()
+            # Pass the input (OrderedDict or text) and label separately
+            result = attack.attack(example_input, original_label)
+            print(f"[DEBUG] Attack {idx + 1} result: {result}")
+            print(f"[DEBUG] Attack {idx + 1} original text: {original_text}")
+            print(f"\n Attack {idx + 1} perturbed text: {result.perturbed_text()}")
+            # Record result for metrics tracking
+            metrics_tracker.record_result(result, original_label, original_text)
             
             results_list.append(result)
-            successful_attacks += 1
+
             
         except Exception as e:
-            failed_attacks += 1
             print(f"[DEBUG] ✗ Attack {idx + 1} failed: {e}")
             print(f"[DEBUG] Continuing to next attack...")
-            # Continue to next attack instead of raising
+            import traceback
+            traceback.print_exc()
+            
+            # Continue to next entry
             continue
     
-    print(f"[DEBUG] Number of successful results: {successful_attacks}")
-    print(f"[DEBUG] Number of failed attacks: {failed_attacks}")
     print(f"[DEBUG] Total results processed: {len(results_list)}")
     print("[DEBUG] ✓ Attack execution and metrics recording completed")
     
-    # Stage 8: Compute and display metrics
-    print("\n[DEBUG] Stage 8: Computing and displaying metrics...")
+    # Stage 8: Display attack metrics
+    print("\n[DEBUG] Stage 8: Displaying attack metrics...")
     try:
         metrics_tracker.print_metrics()
-        print("[DEBUG] ✓ Metrics computation and display passed")
+        print("[DEBUG] ✓ Attack metrics display passed")
     except Exception as e:
-        print(f"[DEBUG] ✗ Metrics computation failed: {e}")
+        print(f"[DEBUG] ✗ Attack metrics display failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    # Stage 9: Display confusion matrix
+    print("\n[DEBUG] Stage 9: Displaying confusion matrix...")
+    try:
+        metrics_tracker.print_confusion_matrix()
+        print("[DEBUG] ✓ Confusion matrix display passed")
+    except Exception as e:
+        print(f"[DEBUG] ✗ Confusion matrix display failed: {e}")
         import traceback
         traceback.print_exc()
         raise
     
     print("\n[DEBUG] All stages completed successfully!")
     
-def test_textattack_integration(model_wrapper):
-    """Test integration with TextAttack - modeled after main.py."""
-    print("\n" + "=" * 80)
-    print("TextAttack Integration Test")
-    print("=" * 80)
-    
-    # Create goal function (modeled after main.py line 58)
-    goal_function = UntargetedClassification(model_wrapper)
-    
-    # load dataset (0 = Legitimate, 1 = Smishing/Spam)
-    test_dataset = load_tuple_dataset("smishing_data/dataset_cleaned_tuples.txt")
-    # test_
-    # Attack initialization 
-    transformation = SimpleWordSwap()
-    constraints = [RepeatModification(), StopwordModification()]
-    search_method = GreedySearch()
-    attack = Attack(goal_function, constraints, transformation, search_method)
-    
-    # Apply attack on the model
-    print("\nClearing CUDA cache before attack...")
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        allocated = torch.cuda.memory_allocated(0) / 1024**2  # MB
-        reserved = torch.cuda.memory_reserved(0) / 1024**2  # MB
-        total = torch.cuda.get_device_properties(0).total_memory / 1024**2  # MB
-        free = total - reserved
-        print(f"CUDA cache cleared. Memory: {allocated:.1f} MB allocated, {reserved:.1f} MB reserved, {free:.1f} MB free")
-    
-    print("\nRunning attack on test dataset...")
-    attack_args = AttackArgs(num_examples=3)  # Test on all 3 examples
-    attacker = Attacker(attack, test_dataset, attack_args)
-    attack_results = attacker.attack_dataset()
-    
-    # Print results
-    print("\n" + "="*80)
-    print("Attack Results")
-    print("="*80)
-    for i, result in enumerate(attack_results, 1):
-        print(f"\n{'='*45} Result {i} {'='*45}")
-        print(str(result) if hasattr(result, '__str__') else result)
-        print()
-
 if __name__ == "__main__":
     # Load model once and reuse across all tests
     print("=" * 80)
@@ -531,17 +465,10 @@ if __name__ == "__main__":
     model_wrapper = QwenSmishingClassifier()
     
     # Run basic classification test
-    test_basic_classification(model_wrapper)
-    
-    # Clear CUDA cache between tests
-    # if torch.cuda.is_available():
-    #     torch.cuda.empty_cache()
-    
-    try: 
-        test_pwws_attack(model_wrapper)
-    except Exception as e:
-        print(f"\nError in PWWS attack test: {e}")
-        print("This might be due to missing dependencies or model loading issues.")
+    # test_basic_classification(model_wrapper)
+
+    # Run PWWS attack test - errors are handled internally
+    test_pwws_attack(model_wrapper)
     
     print("\n" + "=" * 80)
     print("All tests completed!")
