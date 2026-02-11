@@ -34,6 +34,7 @@ from textattack.datasets import Dataset
 from textattack.transformations import WordSwap
 from textattack.attack_recipes.pwws_ren_2019 import PWWSRen2019
 from textattack.attack_recipes.deepwordbug_gao_2018 import DeepWordBugGao2018
+from textattack.attack_recipes.pruthi_2019 import Pruthi2019
 from attack_metrics_tracker import AttackMetricsTracker
 
 def load_tuple_dataset(path):
@@ -187,6 +188,11 @@ def test_pwws_attack(model_wrapper):
 def test_deepwordbug_attack(model_wrapper):
     """Test DeepWordBug attack."""
     run_attack_test(model_wrapper, DeepWordBugGao2018, "DeepWordBug")
+
+
+def test_pruthi_attack(model_wrapper):
+    """Test Pruthi attack."""
+    run_attack_test(model_wrapper, Pruthi2019, "Pruthi")
 
 
 if __name__ == "__main__":
