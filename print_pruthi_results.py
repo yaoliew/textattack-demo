@@ -148,16 +148,17 @@ def main():
         path = args.path
         if not os.path.isfile(path):
             raise SystemExit(f"File not found: {path}")
+        entries = load_pruthi_results(path)
     else:
         results_dir = "attack_results"
         pattern = os.path.join(results_dir, "pruthi_results_*.json")
-        files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+        files = sorted(glob.glob(pattern), key=os.path.getmtime)
         if not files:
             raise SystemExit(f"No Pruthi results found: {pattern}")
-        path = files[0]
-        print(f"Using latest Pruthi results: {path}")
-
-    entries = load_pruthi_results(path)
+        entries = []
+        for path in files:
+            entries.extend(load_pruthi_results(path))
+        print(f"Combined {len(files)} Pruthi results: {', '.join(files)}")
     if not entries:
         print("No entries in results file.")
         return

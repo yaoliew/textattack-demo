@@ -3,9 +3,12 @@ Demo script showing how to use QwenSmishingClassifier with TextAttack.
 """
 
 import ast
+import gc
 import os
 import json
 from datetime import datetime
+
+import torch
 
 # Monkey-patch langdetect to handle "No features in text" errors gracefully
 # This must be done before TextAttack imports langdetect
@@ -35,7 +38,18 @@ from textattack.transformations import WordSwap
 from textattack.attack_recipes.pwws_ren_2019 import PWWSRen2019
 from textattack.attack_recipes.deepwordbug_gao_2018 import DeepWordBugGao2018
 from textattack.attack_recipes.pruthi_2019 import Pruthi2019
+from textattack.attack_recipes.textbugger_li_2018 import TextBuggerLi2018
+from textattack.attack_recipes.bae_garg_2019 import BAEGarg2019
 from attack_metrics_tracker import AttackMetricsTracker
+
+
+def clear_cuda_memory():
+    """Release CUDA cache and run GC to free GPU memory."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
 
 def load_tuple_dataset(path):
     examples = []
@@ -195,6 +209,16 @@ def test_pruthi_attack(model_wrapper):
     run_attack_test(model_wrapper, Pruthi2019, "Pruthi")
 
 
+def test_textbugger_attack(model_wrapper):
+    """Test TextBugger attack."""
+    run_attack_test(model_wrapper, TextBuggerLi2018, "TextBugger")
+
+
+def test_bae_attack(model_wrapper):
+    """Test BAE attack."""
+    run_attack_test(model_wrapper, BAEGarg2019, "BAE")
+
+
 if __name__ == "__main__":
     # Load model once and reuse across all tests
     print("=" * 80)
@@ -206,8 +230,11 @@ if __name__ == "__main__":
     # test_basic_classification(model_wrapper)
 
     # Run actual attack tests
-    test_pruthi_attack(model_wrapper)
+    # test_pruthi_attack(model_wrapper)
+    test_textbugger_attack(model_wrapper)
+    # test_bae_attack(model_wrapper)
     
     print("\n" + "=" * 80)
     print("All tests completed!")
     print("=" * 80)
+    clear_cuda_memory()

@@ -417,19 +417,6 @@
   },
   {
     "entry_number": 33,
-    "original_label": 1,
-    "original_text": "https://tx.vc/r/2YzD3/1Ceuv2/7Sjt6UU",
-    "perturbed_text": "httcps://tx.vc/r/2YzD3/1Ceuv2/7Sjt6UU",
-    "original_prediction": 1,
-    "original_classification": "Smishing",
-    "perturbed_prediction": 0,
-    "perturbed_classification": "Legitimate",
-    "classification_changed": true,
-    "result_type": "SuccessfulAttackResult",
-    "successful": true
-  },
-  {
-    "entry_number": 33,
     "error": "No features in text.",
     "original_label": 1,
     "original_text": "https://tx.vc/r/2YzD3/1Ceuv2/7Sjt6UU"
@@ -3215,19 +3202,6 @@
     "classification_changed": false,
     "result_type": "FailedAttackResult",
     "successful": false
-  },
-  {
-    "entry_number": 248,
-    "original_label": 1,
-    "original_text": "https://tx.vc/r/2YzA2/1Ceu1V/7Sjt6UU",
-    "perturbed_text": "httFps://tx.vc/r/2YzA2/1Ceu1V/7Sjt6UU",
-    "original_prediction": 1,
-    "original_classification": "Smishing",
-    "perturbed_prediction": 0,
-    "perturbed_classification": "Legitimate",
-    "classification_changed": true,
-    "result_type": "SuccessfulAttackResult",
-    "successful": true
   },
   {
     "entry_number": 248,
