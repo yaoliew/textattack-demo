@@ -47,7 +47,7 @@ def load_tuple_dataset(path):
             text, label = ast.literal_eval(line)  # parses "('text', 0)"
             examples.append((text, int(label)))
     # Return every 10th entry
-    return Dataset(examples[::10])
+    return Dataset(examples[600:])
 
 
 class SimpleWordSwap(WordSwap):
@@ -206,9 +206,8 @@ if __name__ == "__main__":
     # test_basic_classification(model_wrapper)
 
     # Run actual attack tests
-    test_deepwordbug_attack(model_wrapper)
+    test_pruthi_attack(model_wrapper)
     
     print("\n" + "=" * 80)
     print("All tests completed!")
     print("=" * 80)
-
