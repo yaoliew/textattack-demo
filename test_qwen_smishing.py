@@ -2,9 +2,13 @@
 Demo script showing how to use QwenSmishingClassifier with TextAttack.
 """
 
+# Disable TensorFlow JIT before any other imports so USE (TextBugger) never sees JIT.
+# Must be first so TF is not loaded elsewhere first.
+import os
+os.environ["TF_XLA_FLAGS"] = os.environ.get("TF_XLA_FLAGS", "") + " --tf_xla_auto_jit=-1"
+
 import ast
 import gc
-import os
 import json
 from datetime import datetime
 
@@ -80,10 +84,22 @@ def run_attack_test(model_wrapper, attack_class, attack_name):
         attack_class: The attack recipe class (e.g., PWWSRen2019, DeepWordBugGao2018)
         attack_name: Name of the attack for display purposes
     """
+    # TextBugger uses Universal Sentence Encoder (TF). Disable TF JIT and force TF to CPU
+    # so USE does not trigger GPU JIT (avoids EncoderDNN/Sqrt and libdevice errors).
+    if attack_name == "TextBugger":
+        os.environ["TF_XLA_FLAGS"] = os.environ.get("TF_XLA_FLAGS", "") + " --tf_xla_auto_jit=-1"
+        try:
+            import tensorflow as tf
+            tf.config.optimizer.set_jit(False)
+            # Force TensorFlow to CPU so USE does not need GPU/libdevice.
+            tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            pass
+
     print("\n" + "=" * 80)
     print(f"{attack_name} Attack Test")
     print("=" * 80)
-    
+
     # Create attack_results folder if it doesn't exist
     results_dir = "attack_results"
     os.makedirs(results_dir, exist_ok=True)

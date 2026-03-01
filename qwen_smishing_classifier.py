@@ -36,7 +36,7 @@ class QwenSmishingClassifier(ModelWrapper):
             device: torch device (auto-detected if None)
         """
         super().__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device if device is not None else ("cuda:1" if torch.cuda.is_available() else "cpu"))
         
         # Primary: Read API keys from environment variables
         self.jina_api_key = os.getenv('JINA_API_KEY')
@@ -83,7 +83,7 @@ class QwenSmishingClassifier(ModelWrapper):
             self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_name,
                 dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                device_map="cuda:0" if self.device.type == "cuda" else None,
+                device_map=str(self.device) if self.device.type == "cuda" else None,
             )
             
             if self.device.type == "cpu":
