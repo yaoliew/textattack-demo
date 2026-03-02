@@ -84,14 +84,13 @@ def run_attack_test(model_wrapper, attack_class, attack_name):
         attack_class: The attack recipe class (e.g., PWWSRen2019, DeepWordBugGao2018)
         attack_name: Name of the attack for display purposes
     """
-    # TextBugger uses Universal Sentence Encoder (TF). Disable TF JIT and force TF to CPU
-    # so USE does not trigger GPU JIT (avoids EncoderDNN/Sqrt and libdevice errors).
-    if attack_name == "TextBugger":
+    # TextBugger and BAE use TensorFlow sentence encoders (e.g. USE). Disable TF JIT and
+    # force TF to CPU so the encoder does not trigger GPU JIT (EncoderDNN/Sqrt, libdevice).
+    if attack_name in ("TextBugger", "BAE"):
         os.environ["TF_XLA_FLAGS"] = os.environ.get("TF_XLA_FLAGS", "") + " --tf_xla_auto_jit=-1"
         try:
             import tensorflow as tf
             tf.config.optimizer.set_jit(False)
-            # Force TensorFlow to CPU so USE does not need GPU/libdevice.
             tf.config.set_visible_devices([], "GPU")
         except Exception:
             pass
@@ -247,7 +246,7 @@ if __name__ == "__main__":
 
     # Run actual attack tests
     # test_pruthi_attack(model_wrapper)
-    test_textbugger_attack(model_wrapper)
+    test_bae_attack(model_wrapper)
     # test_bae_attack(model_wrapper)
     
     print("\n" + "=" * 80)
