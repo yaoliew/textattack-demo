@@ -6,6 +6,9 @@ Demo script showing how to use QwenSmishingClassifier with TextAttack.
 # Must be first so TF is not loaded elsewhere first.
 import os
 os.environ["TF_XLA_FLAGS"] = os.environ.get("TF_XLA_FLAGS", "") + " --tf_xla_auto_jit=-1"
+# Pin this process to physical GPU 1 (so visible cuda:0 maps to GPU 1).
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1")
 
 import ast
 import gc
@@ -44,7 +47,8 @@ from textattack.attack_recipes.deepwordbug_gao_2018 import DeepWordBugGao2018
 from textattack.attack_recipes.pruthi_2019 import Pruthi2019
 from textattack.attack_recipes.textbugger_li_2018 import TextBuggerLi2018
 from textattack.attack_recipes.bae_garg_2019 import BAEGarg2019
-from attack_metrics_tracker import AttackMetricsTracker
+from textattack.attack_recipes.clare_li_2020 import CLARE2020
+from util.attack_metrics_tracker import AttackMetricsTracker
 
 
 def clear_cuda_memory():
@@ -84,9 +88,10 @@ def run_attack_test(model_wrapper, attack_class, attack_name):
         attack_class: The attack recipe class (e.g., PWWSRen2019, DeepWordBugGao2018)
         attack_name: Name of the attack for display purposes
     """
-    # TextBugger and BAE use TensorFlow sentence encoders (e.g. USE). Disable TF JIT and
-    # force TF to CPU so the encoder does not trigger GPU JIT (EncoderDNN/Sqrt, libdevice).
-    if attack_name in ("TextBugger", "BAE"):
+    # TextBugger, BAE, and CLARE use TensorFlow sentence encoders (e.g. USE).
+    # Disable TF JIT and force TF to CPU so the encoder does not trigger
+    # GPU JIT failures (EncoderDNN/Sqrt, libdevice).
+    if attack_name in ("TextBugger", "BAE", "CLARE"):
         os.environ["TF_XLA_FLAGS"] = os.environ.get("TF_XLA_FLAGS", "") + " --tf_xla_auto_jit=-1"
         try:
             import tensorflow as tf
@@ -234,20 +239,27 @@ def test_bae_attack(model_wrapper):
     run_attack_test(model_wrapper, BAEGarg2019, "BAE")
 
 
+def test_clare_attack(model_wrapper):
+    """Test CLARE attack."""
+    run_attack_test(model_wrapper, CLARE2020, "CLARE")
+
+
 if __name__ == "__main__":
     # Load model once and reuse across all tests
     print("=" * 80)
     print("Loading Qwen Smishing Classifier (shared across all tests)")
     print("=" * 80)
-    model_wrapper = QwenSmishingClassifier()
+    # With CUDA_VISIBLE_DEVICES=1, visible cuda:0 is physical GPU 1.
+    model_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    model_wrapper = QwenSmishingClassifier(device=model_device)
     
     # Run basic classification test
     # test_basic_classification(model_wrapper)
 
     # Run actual attack tests
     # test_pruthi_attack(model_wrapper)
-    test_bae_attack(model_wrapper)
     # test_bae_attack(model_wrapper)
+    test_clare_attack(model_wrapper)
     
     print("\n" + "=" * 80)
     print("All tests completed!")
