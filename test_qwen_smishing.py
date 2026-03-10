@@ -69,7 +69,7 @@ def load_tuple_dataset(path):
             text, label = ast.literal_eval(line)  # parses "('text', 0)"
             examples.append((text, int(label)))
     # Return every 10th entry
-    return Dataset(examples[600:])
+    return Dataset(examples[601:1013])
 
 
 class SimpleWordSwap(WordSwap):

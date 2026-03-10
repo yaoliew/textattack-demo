@@ -1,2 +1,5 @@
 .env
 __pycache__/
+attack_results/
+output/
+smishing_data/
